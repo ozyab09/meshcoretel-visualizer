@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeshCoreTel Network Visualization</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="/leaflet.css" />
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+            background-color: #000;
+            color: #fff;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Darken the map for screensaver effect using filter */
+        #map {
+            filter: brightness(0.3);
+        }
+
+        .overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            font-size: 16px;
+            max-width: 300px;
+        }
+
+        .node-info {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            font-size: 14px;
+        }
+
+
+        .packet-info {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .status {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 8px;
+        }
+
+        .animation-circle {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #00ffea;
+            pointer-events: none;
+            z-index: 999;
+            box-shadow: 0 0 10px #00ffea, 0 0 20px #00ffea;
+        }
+
+        .start-pulse {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background-color: rgba(0, 255, 234, 0.7);
+            box-shadow: 0 0 10px #00ffea, 0 0 20px #00ffea;
+            pointer-events: none;
+            z-index: 998;
+            transform-origin: center;
+        }
+
+        .end-pulse {
+            position: absolute;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: rgba(255, 100, 100, 0.7);
+            box-shadow: 0 0 10px #ff6464, 0 0 20px #ff6464;
+            pointer-events: none;
+            z-index: 998;
+            transform-origin: center;
+        }
+
+        .pulse {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(0, 255, 234, 0.5);
+            pointer-events: none;
+            z-index: 998;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(0.5);
+                opacity: 1;
+            }
+            100% {
+                transform: scale(2);
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="overlay">
+        <h2>MeshCoreTel Network</h2>
+        <p>Real-time data visualization</p>
+        <p>Nodes: <span id="node-count">0</span></p>
+    </div>
+    
+    <div class="node-info">
+        <h3>Node Information</h3>
+        <div id="node-details">Select a node for details</div>
+    </div>
+    
+    
+    <div class="packet-info">
+        <h3>Packet Info</h3>
+        <div id="packet-messages">No packets yet...</div>
+    </div>
+
+    <div class="controls">
+        <h3>Controls</h3>
+        <button id="reset-view">Reset View</button>
+        <button id="toggle-animations">Toggle Animations</button>
+    </div>
+
+    <div class="status">
+        <h3>Status</h3>
+        <div id="connection-status">Connecting...</div>
+        <div id="last-update">Last update: Never</div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="/leaflet.js"></script>
+    
+    <script>
+        // Initialize the map centered on Moscow with zoom level 10
+        const map = L.map('map').setView([55.7558, 37.6176], 10);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 18,
+        }).addTo(map);
+
+
+        // Store nodes and connections
+        const nodes = new Map();
+        const connections = new Map();
+        const animationCircles = [];
+        let animationEnabled = true;
+
+        // DOM elements
+        const nodeCountEl = document.getElementById('node-count');
+        const connectionCountEl = document.getElementById('connection-count');
+        const nodeDetailsEl = document.getElementById('node-details');
+        const connectionStatusEl = document.getElementById('connection-status');
+        const lastUpdateEl = document.getElementById('last-update');
+        const resetViewBtn = document.getElementById('reset-view');
+        const toggleAnimationsBtn = document.getElementById('toggle-animations');
+
+        // Fetch all adverts from the API
+        async function fetchNodes() {
+            try {
+                const response = await fetch('/api/adverts');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+
+                // Clear existing nodes
+                nodes.forEach((marker, id) => {
+                    map.removeLayer(marker.marker);
+                });
+                nodes.clear();
+
+                // Add new nodes to the map
+                data.forEach(node => {
+                    // Determine coordinate properties - could be lat/lng or lat/lon
+                    const lat = node.lat;
+                    const lng = node.lng !== undefined ? node.lng : node.lon;
+
+                    // Check if the node has valid coordinates
+                    if (lat != null && lng != null &&
+                        typeof lat === 'number' &&
+                        typeof lng === 'number' &&
+                        !isNaN(lat) &&
+                        !isNaN(lng) &&
+                        Math.abs(lat) <= 90 &&
+                        Math.abs(lng) <= 180 &&
+                        (lat !== 0 || lng !== 0)) {  // Allow one of them to be 0 but not both
+
+                        // Determine node color based on type
+                        let fillColor = "#00ffea"; // Default cyan color
+                        if (node.is_room_server) {
+                            fillColor = "#facc15"; // Yellow for room server
+                        } else if (node.is_repeater) {
+                            fillColor = "#3b82f6"; // Blue for repeater
+                        } else if (node.is_chat_node) {
+                            fillColor = "#10b981"; // Green for chat node
+                        } else if (node.is_sensor) {
+                            fillColor = "#ef4444"; // Red for sensor
+                        }
+
+                        const marker = L.circleMarker([lat, lng], {
+                            radius: 8,
+                            fillColor: fillColor,
+                            color: "#fff",
+                            weight: 1,
+                            opacity: 1,
+                            fillOpacity: 0.8
+                        }).addTo(map);
+
+                        marker.bindPopup(`<b>${node.name || 'Unnamed'}</b><br>Location: ${lat}, ${lng}`);
+
+                        // Store reference to the marker
+                        nodes.set(node.id, {
+                            marker: marker,
+                            data: node
+                        });
+
+                        // Add click event to show details
+                        marker.on('click', () => {
+                            nodeDetailsEl.innerHTML = `
+                                <strong>${node.name || 'Unnamed'}</strong><br>
+                                Location: ${lat}, ${lng}<br>
+                                ID: ${node.id}
+                            `;
+                        });
+                    }
+                });
+
+                // Update node count
+                nodeCountEl.textContent = data.length;
+
+                // Update last update time
+                lastUpdateEl.textContent = `Last update: ${new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
+
+                return data;
+            } catch (error) {
+                console.error('Error fetching nodes:', error);
+                connectionStatusEl.textContent = 'Error fetching nodes: ' + error.message;
+                connectionStatusEl.style.color = 'red';
+            }
+        }
+
+        // Function to create animated circles between nodes
+        // Function to create an animated circle between two points with start and end effects
+        function createAnimatedCircle(startPos, endPos) {
+            if (!animationEnabled) return;
+
+            // Create start pulse effect
+            const startPixel = map.latLngToContainerPoint(startPos);
+            const startPulse = document.createElement('div');
+            startPulse.className = 'start-pulse';
+            startPulse.style.left = `${startPixel.x - 10}px`;
+            startPulse.style.top = `${startPixel.y - 10}px`;
+            startPulse.style.width = '20px';
+            startPulse.style.height = '20px';
+            startPulse.style.borderRadius = '50%';
+            startPulse.style.position = 'absolute';
+            startPulse.style.backgroundColor = 'rgba(0, 255, 234, 0.7)';
+            startPulse.style.boxShadow = '0 0 10px #00ffea, 0 0 20px #00ffea';
+            startPulse.style.pointerEvents = 'none';
+            startPulse.style.zIndex = '998';
+            startPulse.style.transformOrigin = 'center';
+            document.body.appendChild(startPulse);
+
+            // Animate start pulse
+            const startPulseStart = Date.now();
+            const startPulseDuration = 800; // Duration of the start pulse
+
+            function animateStartPulse() {
+                const elapsed = Date.now() - startPulseStart;
+                const progress = Math.min(elapsed / startPulseDuration, 1);
+
+                // Scale and fade out the pulse
+                const scale = 1 + progress * 2; // Grow to 3x size
+                const opacity = 1 - progress; // Fade out
+
+                startPulse.style.transform = `scale(${scale})`;
+                startPulse.style.opacity = opacity;
+
+                if (progress < 1) {
+                    requestAnimationFrame(animateStartPulse);
+                } else {
+                    startPulse.remove();
+                }
+            }
+            requestAnimationFrame(animateStartPulse);
+
+            // Create moving circle
+            const circle = document.createElement('div');
+            circle.className = 'animation-circle';
+            circle.style.left = `${startPixel.x}px`;
+            circle.style.top = `${startPixel.y}px`;
+            circle.style.position = 'absolute';
+            circle.style.width = '10px';
+            circle.style.height = '10px';
+            circle.style.borderRadius = '50%';
+            circle.style.backgroundColor = '#00ffea';
+            circle.style.boxShadow = '0 0 8px #00ffea, 0 0 16px #00ffea';
+            circle.style.pointerEvents = 'none';
+            circle.style.zIndex = '999';
+            document.body.appendChild(circle);
+
+            // Calculate distance for animation duration
+            const endPixel = map.latLngToContainerPoint(endPos);
+            const distance = Math.sqrt(
+                Math.pow(endPixel.x - startPixel.x, 2) +
+                Math.pow(endPixel.y - startPixel.y, 2)
+            );
+
+            // Animate the circle to the end position
+            const duration = Math.max(1000, distance * 10); // Minimum 1 second, scaled by distance
+            const startTime = Date.now();
+
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                // Calculate current position
+                const currentX = startPixel.x + (endPixel.x - startPixel.x) * progress;
+                const currentY = startPixel.y + (endPixel.y - startPixel.y) * progress;
+
+                circle.style.left = `${currentX}px`;
+                circle.style.top = `${currentY}px`;
+
+                // Continue animation until complete
+                if (progress < 1) {
+                    requestAnimationFrame(animate);
+                } else {
+                    // Create end explosion effect
+                    const endPulse = document.createElement('div');
+                    endPulse.className = 'end-pulse';
+                    endPulse.style.left = `${endPixel.x - 15}px`;
+                    endPulse.style.top = `${endPixel.y - 15}px`;
+                    endPulse.style.width = '30px';
+                    endPulse.style.height = '30px';
+                    endPulse.style.borderRadius = '50%';
+                    endPulse.style.position = 'absolute';
+                    endPulse.style.backgroundColor = 'rgba(255, 100, 100, 0.7)';
+                    endPulse.style.boxShadow = '0 0 10px #ff6464, 0 0 20px #ff6464';
+                    endPulse.style.pointerEvents = 'none';
+                    endPulse.style.zIndex = '998';
+                    endPulse.style.transformOrigin = 'center';
+                    document.body.appendChild(endPulse);
+
+                    // Animate end pulse
+                    const endPulseStart = Date.now();
+                    const endPulseDuration = 600; // Duration of the end pulse
+
+                    function animateEndPulse() {
+                        const elapsed = Date.now() - endPulseStart;
+                        const progress = Math.min(elapsed / endPulseDuration, 1);
+
+                        // Scale and fade out the pulse
+                        const scale = 1 + progress * 3; // Grow to 4x size
+                        const opacity = 1 - progress; // Fade out
+
+                        endPulse.style.transform = `scale(${scale})`;
+                        endPulse.style.opacity = opacity;
+
+                        if (progress < 1) {
+                            requestAnimationFrame(animateEndPulse);
+                        } else {
+                            endPulse.remove();
+                        }
+                    }
+                    requestAnimationFrame(animateEndPulse);
+
+                    // Remove the moving circle
+                    circle.remove();
+                }
+            }
+
+            // Start animation
+            requestAnimationFrame(animate);
+        }
+
+        // Function to create an animated path that goes through all nodes in sequence
+        function createPropagationPath(nodePositions) {
+            if (!animationEnabled || nodePositions.length < 2) return;
+
+            // Define 7 possible colors for propagation lines with different thicknesses
+            const colors = [
+                { color: "#3b82f6", width: 1 },  // Blue, thin
+                { color: "#facc15", width: 2 },  // Yellow, medium-thin
+                { color: "#10b981", width: 3 },  // Green, medium
+                { color: "#ef4444", width: 1.5 }, // Red, medium-thin
+                { color: "#8b5cf6", width: 2.5 }, // Purple, medium-thick
+                { color: "#06b6d4", width: 1.2 }, // Cyan, thin-medium
+                { color: "#f97316", width: 2.2 }  // Orange, medium-thick
+            ];
+            // Select a random color and thickness
+            const randomStyle = colors[Math.floor(Math.random() * colors.length)];
+            const randomColor = randomStyle.color;
+            const strokeWidth = randomStyle.width;
+
+            // Create SVG element for the path
+            const svgNS = "http://www.w3.org/2000/svg";
+            const svg = document.createElementNS(svgNS, "svg");
+            svg.style.position = "absolute";
+            svg.style.top = "0";
+            svg.style.left = "0";
+            svg.style.width = "100%";
+            svg.style.height = "100%";
+            svg.style.pointerEvents = "none";
+            svg.style.overflow = "visible";
+            svg.style.zIndex = "999";
+
+            // Create the line element for straight path
+            const line = document.createElementNS(svgNS, "polyline");
+            line.setAttribute("stroke", randomColor); // Random color from the set
+            line.setAttribute("stroke-width", strokeWidth); // Variable line width
+            line.setAttribute("fill", "none");
+            line.setAttribute("stroke-opacity", "0"); // Start invisible
+
+            // Convert positions to pixels
+            const pixelPoints = nodePositions.map(pos => map.latLngToContainerPoint(pos));
+
+            // Create points string for polyline
+            const pointsString = pixelPoints.map(p => `${p.x},${p.y}`).join(" ");
+            line.setAttribute("points", pointsString);
+
+            svg.appendChild(line);
+            document.body.appendChild(svg);
+
+            // Animate the path drawing with enhanced visual effects
+            const duration = nodePositions.length * 300; // Adjust duration based on path length
+            const startTime = Date.now();
+
+            function animate() {
+                const elapsed = Date.now() - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+
+                // Gradually increase opacity to create fade-in effect
+                const opacity = Math.min(progress * 3, 1); // Fade in faster than drawing
+                line.setAttribute("stroke-opacity", opacity);
+
+                // Add pulsing glow effect during animation
+                if (progress < 1) {
+                    const pulseIntensity = 0.5 + 0.5 * Math.sin(Date.now() / 100);
+                    const glowColor = randomColor.replace('#', '');
+                    line.style.filter = `drop-shadow(0 0 ${2 + pulseIntensity * 3}px #${glowColor})`;
+                } else {
+                    line.style.filter = "none";
+                }
+
+                // Fade out effect after completing the path
+                if (progress >= 1) {
+                    const fadeDuration = 1000; // Longer fade out for better visual effect
+                    const fadeElapsed = Date.now() - (startTime + duration);
+                    const fadeProgress = Math.min(fadeElapsed / fadeDuration, 1);
+                    const finalOpacity = 1 - fadeProgress;
+                    line.setAttribute("stroke-opacity", finalOpacity);
+
+                    if (fadeProgress >= 1) {
+                        // Remove the SVG when animation completes
+                        if (svg.parentNode) {
+                            svg.parentNode.removeChild(svg);
+                        }
+                        return;
+                    }
+                }
+
+                // Continue animation
+                requestAnimationFrame(animate);
+            }
+
+            // Start animation
+            requestAnimationFrame(animate);
+        }
+
+        // Function to handle incoming data from SSE
+        function setupSSE() {
+            const eventSource = new EventSource('/sse');
+            
+            eventSource.onopen = function() {
+                connectionStatusEl.textContent = 'Connected';
+                connectionStatusEl.style.color = 'green';
+            };
+            
+            eventSource.onerror = function() {
+                connectionStatusEl.textContent = 'Connection error';
+                connectionStatusEl.style.color = 'red';
+            };
+            
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'packet') {
+                        // Handle packet data
+                        try {
+                            const packetData = JSON.parse(data.data);
+
+                            // Display packet info in the packet messages window
+                            const packetInfoEl = document.getElementById('packet-messages');
+                            const direction = packetData.direction || 'unknown';
+                            // Try to get sender name in order of priority: sender_name -> group_sender_name -> advert_name
+                            let senderName = '';
+                            if (packetData.sender_name) {
+                                senderName = packetData.sender_name;
+                            } else if (packetData.group_sender_name) {
+                                senderName = packetData.group_sender_name;
+                            } else if (packetData.advert_name) {
+                                senderName = packetData.advert_name;
+                            }
+                            const origin = packetData.origin || 'unknown';
+
+                            // Format the timestamp in 24-hour format
+                            let timeStr = '';
+                            if (packetData.ts_gateway) {
+                                try {
+                                    const date = new Date(packetData.ts_gateway);
+                                    timeStr = date.toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'}) + ' ';
+                                } catch (e) {
+                                    console.error('Error formatting timestamp:', e);
+                                }
+                            }
+
+                            const packetInfo = `${timeStr}${direction.toUpperCase()}: ${senderName} → ${origin}`;
+
+                            // Create a new message element
+                            const messageDiv = document.createElement('div');
+                            messageDiv.style.marginBottom = '8px';
+                            messageDiv.style.fontSize = '12px';
+                            messageDiv.style.color = '#94a3b8';
+                            messageDiv.textContent = packetInfo;
+
+                            // If it still shows "No packets yet...", clear it
+                            if (packetInfoEl.textContent.trim() === 'No packets yet...') {
+                                packetInfoEl.innerHTML = '';
+                            }
+
+                            // Add the new message to the top of the list
+                            packetInfoEl.insertBefore(messageDiv, packetInfoEl.firstChild);
+
+                            // Limit the number of displayed messages to prevent overflow
+                            if (packetInfoEl.children.length > 5) {
+                                packetInfoEl.removeChild(packetInfoEl.lastChild);
+                            }
+
+                            // Example: Create animation between two nodes
+                            if (packetData.src_hash && packetData.dst_hash) {
+                                // Find nodes by their hash instead of ID
+                                const fromNode = Array.from(nodes.values()).find(n => n.data.public_key_hex && n.data.public_key_hex.startsWith(packetData.src_hash));
+                                const toNode = Array.from(nodes.values()).find(n => n.data.public_key_hex && n.data.public_key_hex.startsWith(packetData.dst_hash));
+
+                                if (fromNode && toNode) {
+                                    createAnimatedCircle(
+                                        [fromNode.data.lat, fromNode.data.lng],
+                                        [toNode.data.lat, toNode.data.lng]
+                                    );
+                                } else {
+                                    // Alternative: animate based on coordinates if available in packet
+                                    if (packetData.lat && packetData.lon && packetData.dst_lat && packetData.dst_lon) {
+                                        createAnimatedCircle(
+                                            [packetData.lat, packetData.lon],
+                                            [packetData.dst_lat, packetData.dst_lon]
+                                        );
+                                    }
+                                }
+                            }
+                        } catch (parseError) {
+                            console.error('Error parsing packet data:', parseError);
+                        }
+                    } else if (data.type === 'propagation') {
+                        // Handle propagation data
+                        try {
+                            const propData = JSON.parse(data.data);
+
+                            // Handle propagation path animation
+                            if (propData.type === 'propagation.path' && propData.path && propData.path.nodes) {
+                                const nodesList = propData.path.nodes;
+
+                                // Function to find a node by node_hash or get the closest node
+                                const findNodeByHash = (hash) => {
+                                    // First try to find in the current nodes map
+                                    for (const [id, nodeData] of nodes.entries()) {
+                                        if (nodeData.data.node_hash == parseInt(hash)) {
+                                            return nodeData.data;
+                                        }
+                                    }
+
+                                    // If not found in current nodes, try to get from API
+                                    try {
+                                        // Since we can't do async fetch here, we'll use existing nodes
+                                        // Find the closest node based on geographical distance
+                                        const nodeList = Array.from(nodes.values()).map(n => n.data).filter(n => n.lat && n.lon);
+
+                                        if (nodeList.length > 0) {
+                                            // For now, return a random node if no specific criteria
+                                            // In a real implementation, we would calculate distances
+                                            const randomIndex = Math.floor(Math.random() * nodeList.length);
+                                            return nodeList[randomIndex];
+                                        }
+                                    } catch (fetchError) {
+                                        console.error('Error fetching nodes for mapping:', fetchError);
+                                    }
+
+                                    return null;
+                                };
+
+                                // Helper function to calculate distance between two points (in km)
+                                function calculateDistance(lat1, lon1, lat2, lon2) {
+                                    const R = 6371; // Earth radius in km
+                                    const dLat = (lat2 - lat1) * Math.PI / 180;
+                                    const dLon = (lon2 - lon1) * Math.PI / 180;
+                                    const a =
+                                        Math.sin(dLat/2) * Math.sin(dLat/2) +
+                                        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                                        Math.sin(dLon/2) * Math.sin(dLon/2);
+                                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                                    return R * c; // Distance in km
+                                }
+
+                                // Function to find the closest node to a given position
+                                function findClosestNode(lat, lon) {
+                                    let closestNode = null;
+                                    let minDistance = Infinity;
+
+                                    for (const [id, nodeData] of nodes.entries()) {
+                                        const node = nodeData.data;
+                                        if (node.lat && node.lon) {
+                                            const distance = calculateDistance(lat, lon, node.lat, node.lon);
+                                            if (distance < minDistance) {
+                                                minDistance = distance;
+                                                closestNode = node;
+                                            }
+                                        }
+                                    }
+
+                                    return closestNode;
+                                }
+
+                                // Create a path through all nodes in the propagation path
+                                const nodePositions = [];
+
+                                for (let i = 0; i < nodesList.length; i++) {
+                                    let node = findNodeByHash(nodesList[i]);
+
+                                    // If we don't have a node, find the closest node to the previous node in the path
+                                    if (!node && i > 0) {
+                                        const prevNode = findNodeByHash(nodesList[i - 1]);
+                                        if (prevNode) {
+                                            node = findClosestNode(prevNode.lat, prevNode.lon);
+                                        }
+                                    }
+
+                                    // If still no node, try finding from adjacent nodes in the path
+                                    if (!node && i > 0 && i < nodesList.length - 1) {
+                                        const prevNode = findNodeByHash(nodesList[i - 1]);
+                                        const nextNode = findNodeByHash(nodesList[i + 1]);
+                                        if (prevNode && nextNode) {
+                                            // Find node closest to midpoint between previous and next nodes
+                                            const midLat = (prevNode.lat + nextNode.lat) / 2;
+                                            const midLon = (prevNode.lon + nextNode.lon) / 2;
+                                            node = findClosestNode(midLat, midLon);
+                                        } else if (prevNode) {
+                                            node = findClosestNode(prevNode.lat, prevNode.lon);
+                                        } else if (nextNode) {
+                                            node = findClosestNode(nextNode.lat, nextNode.lon);
+                                        }
+                                    }
+
+                                    if (node && node.lat != null && node.lon != null) {
+                                        nodePositions.push([node.lat, node.lon]);
+                                    }
+                                }
+
+                                // Create animated path through all nodes
+                                if (nodePositions.length >= 2) {
+                                    createPropagationPath(nodePositions);
+                                }
+                            }
+                        } catch (parseError) {
+                            console.error('Error parsing propagation data:', parseError);
+                        }
+                    } else if (data.type === 'ping') {
+                        // Keep-alive message
+                        lastUpdateEl.textContent = `Last update: ${new Date().toLocaleTimeString('en-US', {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'})}`;
+                    } else if (data.type === 'statusUpdate') {
+                        // Update connection status
+                        connectionStatusEl.textContent = data.connectionStatus || 'Connecting...';
+                        connectionStatusEl.style.color = data.connectionStatus &&
+                            (data.connectionStatus.includes('Connected') || data.connectionStatus.includes('online')) ? 'green' : 'orange';
+                    } else if (data.type === 'connected') {
+                        // Update connection status on initial connection
+                        connectionStatusEl.textContent = data.connectionStatus || 'Connected';
+                        connectionStatusEl.style.color = 'green';
+                    }
+                } catch (error) {
+                    console.error('Error processing SSE message:', error);
+                }
+            };
+        }
+
+        // Initialize the application
+        function init() {
+            // Fetch initial nodes
+            fetchNodes();
+            
+            // Set up SSE connection
+            setupSSE();
+            
+            // Refresh nodes every 30 seconds
+            setInterval(fetchNodes, 30000);
+            
+            // Set up button event listeners
+            resetViewBtn.addEventListener('click', () => {
+                map.setView([55.7558, 37.6176], 10);
+            });
+            
+            toggleAnimationsBtn.addEventListener('click', () => {
+                animationEnabled = !animationEnabled;
+                toggleAnimationsBtn.textContent = 
+                    animationEnabled ? 'Disable Animations' : 'Enable Animations';
+            });
+        }
+
+        // Start the application when the map is loaded
+        map.whenReady(init);
+    </script>
+</body>
+</html>
