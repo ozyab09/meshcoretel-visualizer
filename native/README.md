@@ -43,3 +43,8 @@ Then run the native client in another terminal:
 - `R` resets the view to Moscow.
 - `A` toggles animations.
 - Left click selects a node.
+
+## Notes
+
+- Propagation paths are rendered from `/sse` events using short node tokens mapped to known nodes.
+- Logs are written to `native/client.log` for troubleshooting.

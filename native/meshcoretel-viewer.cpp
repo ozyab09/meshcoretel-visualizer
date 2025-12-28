@@ -19,6 +19,7 @@
 #include <chrono>
 #include <csignal>
 #include <execinfo.h>
+#include <exception>
 #include <unordered_map>
 #include <vector>
 
@@ -26,6 +27,7 @@
 
 namespace {
 using nlohmann::json;
+std::mutex g_json_mutex;
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 720;
 constexpr int kTileSize = 256;
@@ -290,144 +292,102 @@ class TileCache {
   std::unordered_map<TileKey, TileTexture, TileKeyHash, TileKeyEq> tiles_;
 };
 
-int JsonSkipToken(const jsmntok_t *tokens, int index, int count) {
-  if (index < 0 || index >= count) {
-    return count;
+json ParseJson(const std::string &input) {
+  std::lock_guard<std::mutex> lock(g_json_mutex);
+  return json::parse(input, nullptr, false);
+}
+
+std::string JsonGetString(const json &obj, const char *key) {
+  auto it = obj.find(key);
+  if (it != obj.end() && it->is_string()) {
+    return it->get<std::string>();
   }
-  int i = index;
-  int to_process = 1;
-  while (i < count && to_process > 0) {
-    const jsmntok_t &tok = tokens[i];
-    if (tok.size < 0 || tok.size > count) {
-      std::cerr << "JsonSkipToken: invalid size " << tok.size << " at index " << i << "\n";
-      return count;
+  return {};
+}
+
+bool JsonGetBool(const json &obj, const char *key, bool fallback) {
+  auto it = obj.find(key);
+  if (it != obj.end() && it->is_boolean()) {
+    return it->get<bool>();
+  }
+  return fallback;
+}
+
+bool LooksLikeJsonObject(const std::string &input) {
+  for (char c : input) {
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+      continue;
     }
-    to_process--;
-    if (tok.type == JSMN_OBJECT) {
-      if (tok.size > (count - i) / 2) {
-        std::cerr << "JsonSkipToken: object size overflow at index " << i << "\n";
-        return count;
-      }
-      to_process += tok.size * 2;
-    } else if (tok.type == JSMN_ARRAY) {
-      if (tok.size > (count - i)) {
-        std::cerr << "JsonSkipToken: array size overflow at index " << i << "\n";
-        return count;
-      }
-      to_process += tok.size;
-    }
-    i++;
-  }
-  return i;
-}
-
-bool JsonTokenEquals(const char *json, const jsmntok_t &token, const char *value) {
-  if (token.type != JSMN_STRING) {
-    return false;
-  }
-  int length = token.end - token.start;
-  return std::strncmp(json + token.start, value, static_cast<size_t>(length)) == 0 &&
-         value[length] == '\0';
-}
-
-int JsonFindKey(const char *json, const jsmntok_t *tokens, int obj_index, int count, const char *key) {
-  if (obj_index < 0 || obj_index >= count) {
-    return -1;
-  }
-  if (tokens[obj_index].type != JSMN_OBJECT) {
-    return -1;
-  }
-  int idx = obj_index + 1;
-  for (int i = 0; i < tokens[obj_index].size && idx < count; i++) {
-    int key_idx = idx;
-    int value_idx = idx + 1;
-    if (value_idx < count && JsonTokenEquals(json, tokens[key_idx], key)) {
-      return value_idx;
-    }
-    idx = JsonSkipToken(tokens, value_idx, count);
-  }
-  return -1;
-}
-
-std::string JsonGetString(const char *json, const jsmntok_t *tokens, int index) {
-  if (index < 0) {
-    return {};
-  }
-  if (tokens[index].type != JSMN_STRING) {
-    return {};
-  }
-  int length = tokens[index].end - tokens[index].start;
-  return std::string(json + tokens[index].start, static_cast<size_t>(length));
-}
-
-bool JsonGetBool(const char *json, const jsmntok_t *tokens, int index, bool *out) {
-  if (index < 0) {
-    return false;
-  }
-  if (tokens[index].type != JSMN_PRIMITIVE) {
-    return false;
-  }
-  int length = tokens[index].end - tokens[index].start;
-  std::string value(json + tokens[index].start, static_cast<size_t>(length));
-  if (value == "true") {
-    *out = true;
-    return true;
-  }
-  if (value == "false") {
-    *out = false;
-    return true;
+    return c == '{';
   }
   return false;
 }
 
-bool JsonGetNumber(const char *json, const jsmntok_t *tokens, int index, double *out) {
-  if (index < 0) {
-    return false;
+std::string ExtractJsonStringField(const std::string &input, const char *key) {
+  std::string pattern = "\"";
+  pattern += key;
+  pattern += "\"";
+  size_t pos = input.find(pattern);
+  if (pos == std::string::npos) {
+    return {};
   }
-  if (tokens[index].type != JSMN_PRIMITIVE) {
-    return false;
+  pos = input.find(':', pos + pattern.size());
+  if (pos == std::string::npos) {
+    return {};
   }
-  std::string value(json + tokens[index].start,
-                    static_cast<size_t>(tokens[index].end - tokens[index].start));
-  char *end = nullptr;
-  double result = std::strtod(value.c_str(), &end);
-  if (end == value.c_str()) {
-    return false;
+  pos++;
+  while (pos < input.size() && (input[pos] == ' ' || input[pos] == '\t' || input[pos] == '\r' || input[pos] == '\n')) {
+    pos++;
   }
-  *out = result;
-  return true;
+  if (pos >= input.size() || input[pos] != '"') {
+    return {};
+  }
+  pos++;
+  std::string out;
+  out.reserve(128);
+  bool escape = false;
+  for (; pos < input.size(); pos++) {
+    char c = input[pos];
+    if (escape) {
+      out.push_back(c);
+      escape = false;
+      continue;
+    }
+    if (c == '\\') {
+      escape = true;
+      continue;
+    }
+    if (c == '"') {
+      break;
+    }
+    out.push_back(c);
+  }
+  return out;
 }
 
-std::string JsonUnescape(const std::string &input) {
+std::string UnescapeJsonString(const std::string &input) {
   std::string out;
   out.reserve(input.size());
+  bool escape = false;
   for (size_t i = 0; i < input.size(); i++) {
     char c = input[i];
-    if (c == '\\' && i + 1 < input.size()) {
-      char next = input[i + 1];
-      switch (next) {
-        case '"': out.push_back('"'); break;
-        case '\\': out.push_back('\\'); break;
-        case '/': out.push_back('/'); break;
-        case 'b': out.push_back('\b'); break;
-        case 'f': out.push_back('\f'); break;
+    if (escape) {
+      switch (c) {
         case 'n': out.push_back('\n'); break;
         case 'r': out.push_back('\r'); break;
         case 't': out.push_back('\t'); break;
-        case 'u': {
-          // Skip \uXXXX sequences; keep placeholder.
-          out.push_back('?');
-          i += 5;
-          continue;
-        }
-        default:
-          out.push_back(next);
-          break;
+        case '\\': out.push_back('\\'); break;
+        case '"': out.push_back('"'); break;
+        default: out.push_back(c); break;
       }
-      i++;
-    } else {
-      out.push_back(c);
+      escape = false;
+      continue;
     }
+    if (c == '\\') {
+      escape = true;
+      continue;
+    }
+    out.push_back(c);
   }
   return out;
 }
@@ -451,87 +411,57 @@ void UpdateNodeIndex(AppState &state) {
 
 std::vector<Node> ParseNodesJson(const std::string &json) {
   std::vector<Node> nodes;
-  jsmn_parser parser;
-  std::vector<jsmntok_t> tokens;
-  int count = -1;
-  size_t token_cap = 4096;
-  while (token_cap <= 131072) {
-    tokens.assign(token_cap, jsmntok_t{});
-    jsmn_init(&parser);
-    count = jsmn_parse(&parser, json.c_str(), json.size(), tokens.data(), tokens.size());
-    if (count >= 1) {
-      break;
-    }
-    token_cap *= 2;
-  }
-  if (count < 1 || tokens[0].type != JSMN_ARRAY) {
-    std::cerr << "ParseNodesJson: unexpected JSON root\n";
-    return nodes;
-  }
-
-  int idx = 1;
-  for (int i = 0; i < tokens[0].size; i++) {
-    if (idx >= count) {
-      break;
-    }
-    int obj_index = idx;
-    idx = JsonSkipToken(tokens.data(), idx, count);
-    if (obj_index >= count) {
-      break;
-    }
-    if (tokens[obj_index].type != JSMN_OBJECT) {
-      continue;
+  try {
+    auto root = ParseJson(json);
+    if (root.is_discarded() || !root.is_array()) {
+      std::cerr << "ParseNodesJson: unexpected JSON root\n";
+      return nodes;
     }
 
-    Node node;
-    int id_idx = JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "id");
-    double id_val = 0.0;
-    if (JsonGetNumber(json.c_str(), tokens.data(), id_idx, &id_val)) {
-      node.id = static_cast<int>(id_val);
+    for (const auto &entry : root) {
+      if (!entry.is_object()) {
+        continue;
+      }
+      Node node;
+      auto id_it = entry.find("id");
+      if (id_it != entry.end() && id_it->is_number()) {
+        node.id = id_it->get<int>();
+      }
+      auto hash_it = entry.find("node_hash");
+      if (hash_it != entry.end() && hash_it->is_number()) {
+        node.node_hash = hash_it->get<int>();
+      }
+      node.name = JsonGetString(entry, "name");
+      node.public_key_hex = JsonGetString(entry, "public_key_hex");
+      node.is_room_server = JsonGetBool(entry, "is_room_server", false);
+      node.is_repeater = JsonGetBool(entry, "is_repeater", false);
+      node.is_chat_node = JsonGetBool(entry, "is_chat_node", false);
+      node.is_sensor = JsonGetBool(entry, "is_sensor", false);
+
+      auto lat_it = entry.find("lat");
+      auto lon_it = entry.find("lon");
+      auto lng_it = entry.find("lng");
+      bool has_lat = lat_it != entry.end() && lat_it->is_number();
+      bool has_lon = lon_it != entry.end() && lon_it->is_number();
+      bool has_lng = lng_it != entry.end() && lng_it->is_number();
+
+      if (has_lat) {
+        node.lat = lat_it->get<double>();
+      }
+      if (has_lon) {
+        node.lon = lon_it->get<double>();
+      } else if (has_lng) {
+        node.lon = lng_it->get<double>();
+        has_lon = true;
+      }
+
+      node.has_position = has_lat && has_lon && !(node.lat == 0.0 && node.lon == 0.0) &&
+                          std::abs(node.lat) <= 90.0 && std::abs(node.lon) <= 180.0;
+
+      nodes.push_back(node);
     }
-
-    int hash_idx = JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "node_hash");
-    double hash_val = 0.0;
-    if (JsonGetNumber(json.c_str(), tokens.data(), hash_idx, &hash_val)) {
-      node.node_hash = static_cast<int>(hash_val);
-    }
-
-    int lat_idx = JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "lat");
-    int lon_idx = JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "lon");
-    int lng_idx = JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "lng");
-    double lat = 0.0;
-    double lon = 0.0;
-    bool has_lat = JsonGetNumber(json.c_str(), tokens.data(), lat_idx, &lat);
-    bool has_lon = JsonGetNumber(json.c_str(), tokens.data(), lon_idx, &lon);
-    if (!has_lon) {
-      has_lon = JsonGetNumber(json.c_str(), tokens.data(), lng_idx, &lon);
-    }
-
-    node.lat = lat;
-    node.lon = lon;
-    node.has_position = has_lat && has_lon && !(lat == 0.0 && lon == 0.0) &&
-                        std::abs(lat) <= 90.0 && std::abs(lon) <= 180.0;
-
-    node.name = JsonGetString(json.c_str(), tokens.data(),
-                              JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "name"));
-    node.public_key_hex = JsonGetString(
-        json.c_str(), tokens.data(),
-        JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "public_key_hex"));
-
-    JsonGetBool(json.c_str(), tokens.data(),
-                JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "is_room_server"),
-                &node.is_room_server);
-    JsonGetBool(json.c_str(), tokens.data(),
-                JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "is_repeater"),
-                &node.is_repeater);
-    JsonGetBool(json.c_str(), tokens.data(),
-                JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "is_chat_node"),
-                &node.is_chat_node);
-    JsonGetBool(json.c_str(), tokens.data(),
-                JsonFindKey(json.c_str(), tokens.data(), obj_index, count, "is_sensor"),
-                &node.is_sensor);
-
-    nodes.push_back(node);
+  } catch (const std::exception &e) {
+    std::cerr << "ParseNodesJson error: " << e.what() << "\n";
   }
 
   return nodes;
@@ -553,12 +483,78 @@ SDL_Color ColorForNode(const Node &node) {
   return SDL_Color{0, 255, 234, 255};
 }
 
+const Node *FindNodeByPublicKeyPrefix(const std::vector<Node> &nodes, const std::string &prefix) {
+  if (prefix.empty()) {
+    return nullptr;
+  }
+  std::string needle = prefix;
+  std::transform(needle.begin(), needle.end(), needle.begin(), ::toupper);
+  for (const auto &node : nodes) {
+    if (node.public_key_hex.empty()) {
+      continue;
+    }
+    std::string hex = node.public_key_hex;
+    std::transform(hex.begin(), hex.end(), hex.begin(), ::toupper);
+    if (hex.rfind(needle, 0) == 0) {
+      return &node;
+    }
+  }
+  return nullptr;
+}
+
+const Node *FindNodeByPropagationToken(const std::vector<Node> &nodes, const std::string &token) {
+  if (token.empty()) {
+    return nullptr;
+  }
+  std::string needle = token;
+  std::transform(needle.begin(), needle.end(), needle.begin(), ::toupper);
+  for (const auto &node : nodes) {
+    if (!node.public_key_hex.empty()) {
+      std::string hex = node.public_key_hex;
+      std::transform(hex.begin(), hex.end(), hex.begin(), ::toupper);
+      if (hex.rfind(needle, 0) == 0) {
+        return &node;
+      }
+    }
+    if (node.node_hash != 0) {
+      std::ostringstream oss;
+      oss << std::uppercase << std::hex << node.node_hash;
+      std::string hash_hex = oss.str();
+      if (hash_hex.rfind(needle, 0) == 0) {
+        return &node;
+      }
+    }
+  }
+  return nullptr;
+}
+
 void DrawFilledCircle(SDL_Renderer *renderer, int cx, int cy, int radius, SDL_Color color) {
   SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
   SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
   for (int dy = -radius; dy <= radius; dy++) {
     int dx = static_cast<int>(std::sqrt(radius * radius - dy * dy));
     SDL_RenderDrawLine(renderer, cx - dx, cy + dy, cx + dx, cy + dy);
+  }
+}
+
+void DrawThickLine(SDL_Renderer *renderer, int x1, int y1, int x2, int y2,
+                   float width, SDL_Color color, SDL_BlendMode blend_mode) {
+  SDL_SetRenderDrawBlendMode(renderer, blend_mode);
+  SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+  float dx = static_cast<float>(x2 - x1);
+  float dy = static_cast<float>(y2 - y1);
+  float len = std::sqrt(dx * dx + dy * dy);
+  if (len < 1.0f) {
+    SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+    return;
+  }
+  float nx = -dy / len;
+  float ny = dx / len;
+  int half = static_cast<int>(std::max(1.0f, width) / 2.0f);
+  for (int i = -half; i <= half; i++) {
+    int ox = static_cast<int>(nx * i);
+    int oy = static_cast<int>(ny * i);
+    SDL_RenderDrawLine(renderer, x1 + ox, y1 + oy, x2 + ox, y2 + oy);
   }
 }
 
@@ -585,180 +581,216 @@ struct SseStreamState {
 };
 
 void HandlePacketMessage(AppState &state, const std::string &payload) {
-  jsmn_parser parser;
-  jsmn_init(&parser);
-  std::vector<jsmntok_t> tokens(2048);
-  int count = jsmn_parse(&parser, payload.c_str(), payload.size(), tokens.data(), tokens.size());
-  if (count < 1 || tokens[0].type != JSMN_OBJECT) {
-    return;
-  }
+  try {
+    if (payload.size() > 1024 * 1024 || !LooksLikeJsonObject(payload)) {
+      return;
+    }
+    auto root = ParseJson(payload);
+    if (root.is_discarded() || !root.is_object()) {
+      return;
+    }
 
-  auto getStr = [&](const char *key) -> std::string {
-    int idx = JsonFindKey(payload.c_str(), tokens.data(), 0, count, key);
-    return JsonGetString(payload.c_str(), tokens.data(), idx);
-  };
+    std::string direction = JsonGetString(root, "direction");
+    std::string sender = JsonGetString(root, "sender_name");
+    if (sender.empty()) {
+      sender = JsonGetString(root, "group_sender_name");
+    }
+    if (sender.empty()) {
+      sender = JsonGetString(root, "advert_name");
+    }
+    std::string origin = JsonGetString(root, "origin");
+    if (sender.empty()) {
+      sender = "unknown";
+    }
+    if (origin.empty()) {
+      origin = "unknown";
+    }
 
-  std::string direction = getStr("direction");
-  std::string sender = getStr("sender_name");
-  if (sender.empty()) {
-    sender = getStr("group_sender_name");
-  }
-  if (sender.empty()) {
-    sender = getStr("advert_name");
-  }
-  std::string origin = getStr("origin");
+    std::string time_prefix = FormatTimeNow();
 
-  std::string time_prefix = FormatTimeNow();
+    std::ostringstream message;
+    if (!time_prefix.empty()) {
+      message << time_prefix << " ";
+    }
+    if (!direction.empty()) {
+      std::transform(direction.begin(), direction.end(), direction.begin(), ::toupper);
+      message << direction << ": ";
+    }
+    message << sender << " -> " << origin;
 
-  std::ostringstream message;
-  if (!time_prefix.empty()) {
-    message << time_prefix << " ";
-  }
-  if (!direction.empty()) {
-    std::transform(direction.begin(), direction.end(), direction.begin(), ::toupper);
-    message << direction << ": ";
-  }
-  message << sender << " -> " << origin;
+    state.packet_messages.push_front(PacketMessage{message.str(), NowMs()});
+    while (state.packet_messages.size() > kMaxPacketMessages) {
+      state.packet_messages.pop_back();
+    }
 
-  state.packet_messages.push_front(PacketMessage{message.str(), NowMs()});
-  while (state.packet_messages.size() > kMaxPacketMessages) {
-    state.packet_messages.pop_back();
-  }
-
-  int src_idx = JsonFindKey(payload.c_str(), tokens.data(), 0, count, "src_hash");
-  int dst_idx = JsonFindKey(payload.c_str(), tokens.data(), 0, count, "dst_hash");
-  double src_hash = 0.0;
-  double dst_hash = 0.0;
-  bool has_src = JsonGetNumber(payload.c_str(), tokens.data(), src_idx, &src_hash);
-  bool has_dst = JsonGetNumber(payload.c_str(), tokens.data(), dst_idx, &dst_hash);
-  if (has_src && has_dst) {
-    auto src_it = state.node_hash_index.find(static_cast<int>(src_hash));
-    auto dst_it = state.node_hash_index.find(static_cast<int>(dst_hash));
-    if (src_it != state.node_hash_index.end() && dst_it != state.node_hash_index.end()) {
-      const Node &src = state.nodes[src_it->second];
-      const Node &dst = state.nodes[dst_it->second];
-      if (src.has_position && dst.has_position) {
-        MovingPulse pulse;
-        double sx = 0.0;
-        double sy = 0.0;
-        double ex = 0.0;
-        double ey = 0.0;
-        LatLonToWorldPixel(src.lat, src.lon, kDefaultZoom, &sx, &sy);
-        LatLonToWorldPixel(dst.lat, dst.lon, kDefaultZoom, &ex, &ey);
-        pulse.start.x = static_cast<float>(sx);
-        pulse.start.y = static_cast<float>(sy);
-        pulse.end.x = static_cast<float>(ex);
-        pulse.end.y = static_cast<float>(ey);
-        pulse.start_time_ms = NowMs();
-        state.pulses.push_back(pulse);
+    const Node *src_node = nullptr;
+    const Node *dst_node = nullptr;
+    auto src_hash_it = root.find("src_hash");
+    auto dst_hash_it = root.find("dst_hash");
+    if (src_hash_it != root.end() && dst_hash_it != root.end()) {
+      if (src_hash_it->is_number() && dst_hash_it->is_number()) {
+        int src_hash = src_hash_it->get<int>();
+        int dst_hash = dst_hash_it->get<int>();
+        auto src_it = state.node_hash_index.find(src_hash);
+        auto dst_it = state.node_hash_index.find(dst_hash);
+        if (src_it != state.node_hash_index.end()) {
+          src_node = &state.nodes[src_it->second];
+        }
+        if (dst_it != state.node_hash_index.end()) {
+          dst_node = &state.nodes[dst_it->second];
+        }
+      } else if (src_hash_it->is_string() && dst_hash_it->is_string()) {
+        std::string src_prefix = src_hash_it->get<std::string>();
+        std::string dst_prefix = dst_hash_it->get<std::string>();
+        src_node = FindNodeByPublicKeyPrefix(state.nodes, src_prefix);
+        dst_node = FindNodeByPublicKeyPrefix(state.nodes, dst_prefix);
       }
     }
+
+    if (src_node && dst_node && src_node->has_position && dst_node->has_position) {
+      MovingPulse pulse;
+      double sx = 0.0;
+      double sy = 0.0;
+      double ex = 0.0;
+      double ey = 0.0;
+      LatLonToWorldPixel(src_node->lat, src_node->lon, kDefaultZoom, &sx, &sy);
+      LatLonToWorldPixel(dst_node->lat, dst_node->lon, kDefaultZoom, &ex, &ey);
+      pulse.start.x = static_cast<float>(sx);
+      pulse.start.y = static_cast<float>(sy);
+      pulse.end.x = static_cast<float>(ex);
+      pulse.end.y = static_cast<float>(ey);
+      pulse.start_time_ms = NowMs();
+      state.pulses.push_back(pulse);
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Packet parse error: " << e.what() << "\n";
   }
 }
 
 void HandlePropagationMessage(AppState &state, const std::string &payload) {
-  jsmn_parser parser;
-  jsmn_init(&parser);
-  std::vector<jsmntok_t> tokens(4096);
-  int count = jsmn_parse(&parser, payload.c_str(), payload.size(), tokens.data(), tokens.size());
-  if (count < 1 || tokens[0].type != JSMN_OBJECT) {
-    return;
-  }
-
-  int type_idx = JsonFindKey(payload.c_str(), tokens.data(), 0, count, "type");
-  std::string type = JsonGetString(payload.c_str(), tokens.data(), type_idx);
-  if (type != "propagation.path") {
-    return;
-  }
-
-  int path_idx = JsonFindKey(payload.c_str(), tokens.data(), 0, count, "path");
-  if (path_idx < 0 || tokens[path_idx].type != JSMN_OBJECT) {
-    return;
-  }
-
-  int nodes_idx = JsonFindKey(payload.c_str(), tokens.data(), path_idx, count, "nodes");
-  if (nodes_idx < 0 || tokens[nodes_idx].type != JSMN_ARRAY) {
-    return;
-  }
-
-  PathAnimation anim;
-  anim.start_time_ms = NowMs();
-  anim.duration_ms = std::max(800.0f, tokens[nodes_idx].size * 250.0f);
-
-  int idx = nodes_idx + 1;
-  for (int i = 0; i < tokens[nodes_idx].size; i++) {
-    if (idx >= count) {
-      break;
+  static int propagation_seen = 0;
+  try {
+    if (payload.size() > 1024 * 1024 || !LooksLikeJsonObject(payload)) {
+      return;
     }
-    int node_token = idx;
-    idx = JsonSkipToken(tokens.data(), idx, count);
-    if (node_token >= count) {
-      break;
+    auto root = ParseJson(payload);
+    if (root.is_discarded() || !root.is_object()) {
+      return;
     }
-    double node_hash = 0.0;
-    if (JsonGetNumber(payload.c_str(), tokens.data(), node_token, &node_hash)) {
-      auto it = state.node_hash_index.find(static_cast<int>(node_hash));
-      if (it != state.node_hash_index.end()) {
-        const Node &node = state.nodes[it->second];
-        if (node.has_position) {
-          double px = 0.0;
-          double py = 0.0;
-          LatLonToWorldPixel(node.lat, node.lon, kDefaultZoom, &px, &py);
-          SDL_FPoint pt{static_cast<float>(px), static_cast<float>(py)};
-          anim.points.push_back(pt);
+    std::string type = JsonGetString(root, "type");
+    if (type != "propagation.path") {
+      return;
+    }
+    propagation_seen++;
+    if (propagation_seen <= 5 || propagation_seen % 50 == 0) {
+      std::cerr << "Propagation event received (" << propagation_seen << ")\n";
+    }
+    if (propagation_seen <= 2) {
+      std::string preview = payload.substr(0, 400);
+      std::cerr << "Propagation payload preview: " << preview << "\n";
+    }
+
+    auto path_it = root.find("path");
+    if (path_it == root.end() || !path_it->is_object()) {
+      return;
+    }
+    auto nodes_it = path_it->find("nodes");
+    if (nodes_it == path_it->end() || !nodes_it->is_array()) {
+      return;
+    }
+    if (nodes_it->size() < 2) {
+      return;
+    }
+
+    PathAnimation anim;
+    anim.start_time_ms = NowMs();
+    anim.duration_ms = std::max(800.0f, static_cast<float>(nodes_it->size()) * 250.0f);
+
+    for (const auto &node_value : *nodes_it) {
+      const Node *node = nullptr;
+      if (node_value.is_number()) {
+        int node_hash = node_value.get<int>();
+        auto it = state.node_hash_index.find(node_hash);
+        if (it != state.node_hash_index.end()) {
+          node = &state.nodes[it->second];
         }
+      } else if (node_value.is_string()) {
+        node = FindNodeByPropagationToken(state.nodes, node_value.get<std::string>());
+      }
+      if (node && node->has_position) {
+        double px = 0.0;
+        double py = 0.0;
+        LatLonToWorldPixel(node->lat, node->lon, kDefaultZoom, &px, &py);
+        SDL_FPoint pt{static_cast<float>(px), static_cast<float>(py)};
+        anim.points.push_back(pt);
       }
     }
-  }
 
-  if (anim.points.size() >= 2) {
-    anim.color = SDL_Color{59, 130, 246, 255};
-    anim.width = 2.0f;
-    state.paths.push_back(anim);
+    if (anim.points.size() >= 2) {
+      static const SDL_Color colors[] = {
+        {59, 130, 246, 255},   // blue
+        {250, 204, 21, 255},   // yellow
+        {16, 185, 129, 255},   // green
+        {239, 68, 68, 255},    // red
+        {139, 92, 246, 255},   // purple
+        {6, 182, 212, 255},    // cyan
+        {249, 115, 22, 255}    // orange
+      };
+      static uint32_t seed = 0;
+      if (seed == 0) {
+        seed = static_cast<uint32_t>(NowMs());
+      }
+      seed = seed * 1664525u + 1013904223u;
+      anim.color = colors[seed % (sizeof(colors) / sizeof(colors[0]))];
+      anim.width = 3.5f;
+      state.paths.push_back(anim);
+      if (propagation_seen <= 5 || propagation_seen % 50 == 0) {
+        std::cerr << "Propagation path points: " << anim.points.size() << "\n";
+      }
+    } else if (propagation_seen <= 5 || propagation_seen % 50 == 0) {
+      std::cerr << "Propagation path dropped (matched points: " << anim.points.size() << ")\n";
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "Propagation parse error: " << e.what() << "\n";
   }
 }
 
 void HandleSseMessage(AppState &state, const std::string &json) {
-  jsmn_parser parser;
-  jsmn_init(&parser);
-  std::vector<jsmntok_t> tokens(512);
-  int count = jsmn_parse(&parser, json.c_str(), json.size(), tokens.data(), tokens.size());
-  if (count < 1 || tokens[0].type != JSMN_OBJECT) {
-    std::cerr << "SSE: invalid JSON payload\n";
-    return;
-  }
-
-  int type_idx = JsonFindKey(json.c_str(), tokens.data(), 0, count, "type");
-  std::string type = JsonGetString(json.c_str(), tokens.data(), type_idx);
-
-  if (type == "statusUpdate" || type == "connected") {
-    int status_idx = JsonFindKey(json.c_str(), tokens.data(), 0, count, "connectionStatus");
-    std::string status = JsonGetString(json.c_str(), tokens.data(), status_idx);
-    if (!status.empty()) {
-      state.connection_status = status;
-    }
-    return;
-  }
-
-  if (type == "ping") {
-    state.last_update = FormatTimeNow();
-    return;
-  }
-
-  if (type == "packet" || type == "propagation") {
-    int data_idx = JsonFindKey(json.c_str(), tokens.data(), 0, count, "data");
-    std::string data = JsonGetString(json.c_str(), tokens.data(), data_idx);
-    if (data.empty()) {
+  try {
+    if (json.size() > 1024 * 1024 || !LooksLikeJsonObject(json)) {
       return;
     }
-    std::string payload = JsonUnescape(data);
-    if (type == "packet") {
-      HandlePacketMessage(state, payload);
-    } else {
-      HandlePropagationMessage(state, payload);
+    std::string type = ExtractJsonStringField(json, "type");
+
+    if (type == "statusUpdate" || type == "connected") {
+      std::string status = UnescapeJsonString(ExtractJsonStringField(json, "connectionStatus"));
+      if (!status.empty()) {
+        state.connection_status = status;
+      }
+      return;
     }
-    state.last_update = FormatTimeNow();
-    return;
+
+    if (type == "ping") {
+      state.last_update = FormatTimeNow();
+      return;
+    }
+
+    if (type == "packet" || type == "propagation") {
+      std::string data = UnescapeJsonString(ExtractJsonStringField(json, "data"));
+      if (data.empty()) {
+        return;
+      }
+      std::string payload = data;
+      if (type == "packet") {
+        HandlePacketMessage(state, payload);
+      } else {
+        HandlePropagationMessage(state, payload);
+      }
+      state.last_update = FormatTimeNow();
+      return;
+    }
+  } catch (const std::exception &e) {
+    std::cerr << "SSE parse error: " << e.what() << "\n";
   }
 }
 
@@ -774,7 +806,13 @@ size_t CurlWriteSse(void *contents, size_t size, size_t nmemb, void *userp) {
     if (line.rfind("data: ", 0) == 0) {
       std::string payload = line.substr(6);
       std::lock_guard<std::mutex> lock(*stream->mutex);
-      HandleSseMessage(*stream->state, payload);
+      try {
+        HandleSseMessage(*stream->state, payload);
+      } catch (const std::exception &e) {
+        std::cerr << "SSE handler error: " << e.what() << "\n";
+      } catch (...) {
+        std::cerr << "SSE handler error: unknown exception\n";
+      }
     }
   }
 
@@ -784,48 +822,62 @@ size_t CurlWriteSse(void *contents, size_t size, size_t nmemb, void *userp) {
 void RunSseThread(const std::string &base_url, AppState *state, std::mutex *mutex) {
   std::string url = base_url + "/sse";
   while (true) {
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-      std::cerr << "SSE init failed, retrying...\n";
-      std::this_thread::sleep_for(std::chrono::seconds(5));
-      continue;
-    }
-    std::cerr << "SSE connect: " << url << "\n";
-    SseStreamState stream;
-    stream.mutex = mutex;
-    stream.state = state;
+    try {
+      CURL *curl = curl_easy_init();
+      if (!curl) {
+        std::cerr << "SSE init failed, retrying...\n";
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        continue;
+      }
+      std::cerr << "SSE connect: " << url << "\n";
+      SseStreamState stream;
+      stream.mutex = mutex;
+      stream.state = state;
 
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteSse);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "meshcoretel-native/1.0");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-      std::cerr << "SSE error: " << curl_easy_strerror(res) << "\n";
+      curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteSse);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream);
+      curl_easy_setopt(curl, CURLOPT_USERAGENT, "meshcoretel-native/1.0");
+      curl_easy_setopt(curl, CURLOPT_TIMEOUT, 0L);
+      curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+      curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1L);
+      CURLcode res = curl_easy_perform(curl);
+      if (res != CURLE_OK) {
+        std::cerr << "SSE error: " << curl_easy_strerror(res) << "\n";
+      }
+      curl_easy_cleanup(curl);
+      std::cerr << "SSE disconnected, retrying...\n";
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+    } catch (const std::exception &e) {
+      std::cerr << "SSE thread error: " << e.what() << "\n";
+      std::this_thread::sleep_for(std::chrono::seconds(5));
+    } catch (...) {
+      std::cerr << "SSE thread error: unknown exception\n";
+      std::this_thread::sleep_for(std::chrono::seconds(5));
     }
-    curl_easy_cleanup(curl);
-    std::cerr << "SSE disconnected, retrying...\n";
-    std::this_thread::sleep_for(std::chrono::seconds(5));
   }
 }
 
 void FetchNodesLoop(const std::string &base_url, AppState *state, std::mutex *mutex) {
   while (true) {
-    std::string response = HttpGet(base_url + "/api/adverts");
-    if (!response.empty()) {
-      std::vector<Node> nodes = ParseNodesJson(response);
-      if (!nodes.empty()) {
-        std::lock_guard<std::mutex> lock(*mutex);
-        state->nodes = std::move(nodes);
-        UpdateNodeIndex(*state);
-        state->last_update = FormatTimeNow();
-        std::cerr << "Nodes updated: " << state->nodes.size() << "\n";
+    try {
+      std::string response = HttpGet(base_url + "/api/adverts");
+      if (!response.empty()) {
+        std::vector<Node> nodes = ParseNodesJson(response);
+        if (!nodes.empty()) {
+          std::lock_guard<std::mutex> lock(*mutex);
+          state->nodes = std::move(nodes);
+          UpdateNodeIndex(*state);
+          state->last_update = FormatTimeNow();
+          std::cerr << "Nodes updated: " << state->nodes.size() << "\n";
+        }
+      } else {
+        std::cerr << "Nodes fetch returned empty response\n";
       }
-    } else {
-      std::cerr << "Nodes fetch returned empty response\n";
+    } catch (const std::exception &e) {
+      std::cerr << "FetchNodesLoop error: " << e.what() << "\n";
+    } catch (...) {
+      std::cerr << "FetchNodesLoop error: unknown exception\n";
     }
     SDL_Delay(30000);
   }
@@ -839,6 +891,22 @@ int main(int argc, char **argv) {
 
   LogSink log;
   g_log = &log;
+  std::set_terminate([]() {
+    if (g_log) {
+      g_log->Write("std::terminate called");
+      auto eptr = std::current_exception();
+      if (eptr) {
+        try {
+          std::rethrow_exception(eptr);
+        } catch (const std::exception &e) {
+          g_log->Write(std::string("Unhandled exception: ") + e.what());
+        } catch (...) {
+          g_log->Write("Unhandled exception: unknown");
+        }
+      }
+    }
+    std::_Exit(1);
+  });
   std::signal(SIGSEGV, SignalHandler);
   std::signal(SIGABRT, SignalHandler);
   std::signal(SIGFPE, SignalHandler);
@@ -1057,17 +1125,24 @@ int main(int argc, char **argv) {
 
       for (const auto &path : snapshot.paths) {
         float progress = static_cast<float>(now - path.start_time_ms) / path.duration_ms;
-        if (progress < 0.0f || progress > 1.5f) {
+        if (progress < 0.0f || progress > 2.5f) {
           continue;
         }
-        SDL_SetRenderDrawColor(renderer, path.color.r, path.color.g, path.color.b,
-                               static_cast<Uint8>(180 * (1.0f - std::min(progress, 1.0f))));
+        float alpha_scale = progress <= 1.0f ? 1.0f : std::max(0.0f, 1.0f - (progress - 1.0f));
+        SDL_Color core_color = path.color;
+        core_color.a = static_cast<Uint8>(220 * alpha_scale);
+        SDL_Color glow_color = path.color;
+        glow_color.a = static_cast<Uint8>(90 * alpha_scale);
+        SDL_Color outer_color = path.color;
+        outer_color.a = static_cast<Uint8>(40 * alpha_scale);
         for (size_t i = 1; i < path.points.size(); i++) {
           int x1 = static_cast<int>(path.points[i - 1].x - top_left_x);
           int y1 = static_cast<int>(path.points[i - 1].y - top_left_y);
           int x2 = static_cast<int>(path.points[i].x - top_left_x);
           int y2 = static_cast<int>(path.points[i].y - top_left_y);
-          SDL_RenderDrawLine(renderer, x1, y1, x2, y2);
+          DrawThickLine(renderer, x1, y1, x2, y2, path.width + 4.0f, outer_color, SDL_BLENDMODE_ADD);
+          DrawThickLine(renderer, x1, y1, x2, y2, path.width + 2.0f, glow_color, SDL_BLENDMODE_ADD);
+          DrawThickLine(renderer, x1, y1, x2, y2, path.width, core_color, SDL_BLENDMODE_BLEND);
         }
       }
     }

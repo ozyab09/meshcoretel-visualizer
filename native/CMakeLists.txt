@@ -20,7 +20,6 @@ include_directories(
 
 add_executable(meshcoretel-viewer
   meshcoretel-viewer.cpp
-  jsmn.c
 )
 
 target_link_libraries(meshcoretel-viewer
