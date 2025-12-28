@@ -35,20 +35,28 @@ npm install
 
 ## Running the Application
 
-1. Start the server:
+1. Build the native client (Linux):
+```bash
+cmake -S native -B native/build
+cmake --build native/build
+```
+
+2. Start the server + native UI:
 ```bash
 npm start
 ```
 
-2. Open your browser and navigate to:
-```
-http://localhost:3000
+If you prefer to run only the server (for web access), use:
+```bash
+npm run start:server
 ```
 
 ## Project Structure
 
 ```
 ├── server.js           # Main server implementation
+├── native/             # SDL2 client (Linux)
+├── scripts/            # Helper scripts
 ├── public/
 │   ├── index.html      # Main HTML page
 │   └── ...
