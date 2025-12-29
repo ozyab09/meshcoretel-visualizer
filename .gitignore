@@ -5,9 +5,9 @@ npm-debug.log.*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-native/build/
-native/cache/
-native/client.log
+native/linux/build/
+native/linux/cache/
+native/linux/client.log
 /tmp/meshcoretel-run.log
 
 # Environment variables

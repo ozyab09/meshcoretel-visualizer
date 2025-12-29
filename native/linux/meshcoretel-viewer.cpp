@@ -86,7 +86,7 @@ struct AppState {
 class LogSink {
  public:
   LogSink() {
-    file_.open("native/client.log", std::ios::app);
+    file_.open("native/linux/client.log", std::ios::app);
     if (file_) {
       file_ << "---- client start ----\n";
     }
@@ -977,7 +977,7 @@ int main(int argc, char **argv) {
   std::thread sse_thread(RunSseThread, base_url, &state, &state_mutex);
   std::thread nodes_thread(FetchNodesLoop, base_url, &state, &state_mutex);
 
-  TileCache tile_cache(renderer, "native/cache");
+  TileCache tile_cache(renderer, "native/linux/cache");
 
   bool running = true;
   int window_width = kDefaultWidth;

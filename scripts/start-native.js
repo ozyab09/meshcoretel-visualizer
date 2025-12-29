@@ -3,12 +3,12 @@ const fs = require('fs');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
-const binaryPath = path.join(repoRoot, 'native', 'build', 'meshcoretel-viewer');
+const binaryPath = path.join(repoRoot, 'native', 'linux', 'build', 'meshcoretel-viewer');
 
 if (!fs.existsSync(binaryPath)) {
   console.error('Native client not built. Build it first:');
-  console.error('  cmake -S native -B native/build');
-  console.error('  cmake --build native/build');
+  console.error('  cmake -S native/linux -B native/linux/build');
+  console.error('  cmake --build native/linux/build');
   process.exit(1);
 }
 

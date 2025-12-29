@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 - `server.js` runs the Express + WebSocket backend.
-- `native/` contains the SDL2 client (Linux), build files, and native docs.
+- `native/linux/` contains the SDL2 client (Linux), build files, and native docs.
 - `public/` contains the browser client assets (e.g., `public/index.html`, images, scripts, styles).
 - `scripts/` holds helper scripts (e.g., native launcher).
 - `package.json` defines runtime and dev dependencies plus npm scripts.
@@ -10,8 +10,8 @@
 
 ## Build, Test, and Development Commands
 - `npm install` installs dependencies.
-- `cmake -S native -B native/build` configures the native build.
-- `cmake --build native/build` builds the SDL2 client.
+- `cmake -S native/linux -B native/linux/build` configures the native build.
+- `cmake --build native/linux/build` builds the SDL2 client.
 - `npm start` runs the server and native UI together.
 - `npm run start:server` runs only the server (for web UI or remote clients).
 - `npm run dev` starts the server with `nodemon` for auto-reload during development.
@@ -37,7 +37,7 @@
 ## Security & Configuration Tips
 - Do not commit secrets or tokens. Use environment variables for private values.
 - This service talks to MeshCoreTel APIs; avoid logging sensitive payloads.
-- Native client logs to `native/client.log`; prune logs before sharing.
+- Native client logs to `native/linux/client.log`; prune logs before sharing.
 
 ## Agent-Specific Instructions
 - Keep changes focused, small, and reversible.

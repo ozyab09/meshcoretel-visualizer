@@ -38,8 +38,8 @@ npm install
 
 1. Build the native client (Linux):
 ```bash
-cmake -S native -B native/build
-cmake --build native/build
+cmake -S native/linux -B native/linux/build
+cmake --build native/linux/build
 ```
 
 2. Start the server + native UI:
@@ -54,14 +54,14 @@ npm run start:server
 
 To run just the native client against an already running server:
 ```bash
-./native/build/meshcoretel-viewer
+./native/linux/build/meshcoretel-viewer
 ```
 
 ## Project Structure
 
 ```
 ├── server.js           # Main server implementation
-├── native/             # SDL2 client (Linux)
+├── native/linux/       # SDL2 client (Linux)
 ├── scripts/            # Helper scripts
 ├── public/
 │   ├── index.html      # Main HTML page

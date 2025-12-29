@@ -14,8 +14,8 @@ sudo apt-get install -y \
 ## Build
 
 ```bash
-cmake -S native -B native/build
-cmake --build native/build
+cmake -S native/linux -B native/linux/build
+cmake --build native/linux/build
 ```
 
 ## Run
@@ -30,7 +30,7 @@ npm run start:server
 Then run the native client in another terminal:
 
 ```bash
-./native/build/meshcoretel-viewer
+./native/linux/build/meshcoretel-viewer
 ```
 
 ## Configuration
@@ -47,4 +47,4 @@ Then run the native client in another terminal:
 ## Notes
 
 - Propagation paths are rendered from `/sse` events using short node tokens mapped to known nodes.
-- Logs are written to `native/client.log` for troubleshooting.
+- Logs are written to `native/linux/client.log` for troubleshooting.
