@@ -5,7 +5,7 @@ A real-time visualization tool for the MeshCoreTel network, displaying nodes, co
 ## Features
 
 - Real-time visualization of MeshCoreTel network nodes
-- Animated propagation paths showing data transmission
+- Animated propagation paths showing data transmission (native UI + web)
 - Different colors for different node types:
   - Green: Chat Nodes
   - Blue: Repeaters
@@ -19,6 +19,7 @@ A real-time visualization tool for the MeshCoreTel network, displaying nodes, co
 
 - Node.js (v14 or higher)
 - npm or yarn
+- Linux build tooling for native UI: CMake, SDL2, SDL2_image, SDL2_ttf, libcurl
 
 ## Installation
 
@@ -35,20 +36,33 @@ npm install
 
 ## Running the Application
 
-1. Start the server:
+1. Build the native client (Linux):
+```bash
+cmake -S native/linux -B native/linux/build
+cmake --build native/linux/build
+```
+
+2. Start the server + native UI:
 ```bash
 npm start
 ```
 
-2. Open your browser and navigate to:
+If you prefer to run only the server (for web access), use:
+```bash
+npm run start:server
 ```
-http://localhost:3000
+
+To run just the native client against an already running server:
+```bash
+./native/linux/build/meshcoretel-viewer
 ```
 
 ## Project Structure
 
 ```
 ├── server.js           # Main server implementation
+├── native/linux/       # SDL2 client (Linux)
+├── scripts/            # Helper scripts
 ├── public/
 │   ├── index.html      # Main HTML page
 │   └── ...
@@ -59,6 +73,10 @@ http://localhost:3000
 ## Configuration
 
 The application connects to the MeshCoreTel API endpoints automatically. No additional configuration is required for basic operation.
+
+Optional environment variables:
+- `MESHCORETEL_SERVER_URL` (default `http://localhost:3000`)
+- `MESHCORETEL_FONT_PATH` (default `/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`)
 
 ## API Endpoints
 
@@ -75,6 +93,8 @@ The application connects to the MeshCoreTel network and visualizes:
 2. Real-time data transmission between nodes
 3. Propagation paths when messages travel through the network
 4. Status information and statistics
+
+The native client subscribes to `/sse` and renders propagation links and packet events without a browser process.
 
 ## License
 

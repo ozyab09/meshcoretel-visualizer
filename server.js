@@ -32,6 +32,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // API proxy endpoints
 app.get('/api/adverts', async (req, res) => {
+  const startedAt = Date.now();
   try {
     const { limit: reqLimit, offset: reqOffset } = req.query;
 
@@ -59,12 +60,15 @@ app.get('/api/adverts', async (req, res) => {
         offset += limit;
       }
 
+      console.log(`GET /api/adverts -> ${allData.length} items in ${Date.now() - startedAt}ms`);
       res.json(allData);
     } else {
       // Use the requested limit and offset
       const limit = parseInt(reqLimit) || 100;
       const offset = parseInt(reqOffset) || 0;
       const response = await axios.get(`https://www.meshcoretel.ru/api/adverts?limit=${limit}&offset=${offset}`);
+      const count = Array.isArray(response.data) ? response.data.length : 0;
+      console.log(`GET /api/adverts?limit=${limit}&offset=${offset} -> ${count} items in ${Date.now() - startedAt}ms`);
       res.json(response.data);
     }
   } catch (error) {
@@ -243,6 +247,7 @@ const broadcastToSSE = (data) => {
 
 // Handle SSE connections
 app.get('/sse', (req, res) => {
+  console.log('SSE client connected');
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Connection': 'keep-alive',
@@ -280,6 +285,7 @@ app.get('/sse', (req, res) => {
 
   // Remove client when connection closes
   req.on('close', () => {
+    console.log('SSE client disconnected');
     const index = sseClients.indexOf(client);
     if (index > -1) {
       sseClients.splice(index, 1);
@@ -292,7 +298,7 @@ app.get('/sse', (req, res) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Visit http://localhost:${PORT} to see the MeshCoreTel clone`);
+  console.log(`Web UI (optional): http://localhost:${PORT}`);
   
   // Set up WebSocket proxy connections
   setupWebSocketProxy();
